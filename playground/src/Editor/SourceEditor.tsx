@@ -2,92 +2,68 @@
  * Editor for the Python source code.
  */
 
-import Editor, { useMonaco } from "@monaco-editor/react";
-import { MarkerSeverity, MarkerTag } from "monaco-editor";
-import { useCallback, useEffect } from "react";
-import { Check } from "../pkg";
+import MonacoEditor, { Monaco, OnMount } from "@monaco-editor/react";
+import {
+  editor,
+  IDisposable,
+  languages,
+  MarkerSeverity,
+  MarkerTag,
+  Range,
+} from "monaco-editor";
+import { useCallback, useEffect, useRef } from "react";
+import { Diagnostic } from "../pkg";
 import { Theme } from "./theme";
+import CodeActionProvider = languages.CodeActionProvider;
+import IStandaloneCodeEditor = editor.IStandaloneCodeEditor;
+
+type MonacoEditorState = {
+  monaco: Monaco;
+  codeActionProvider: RuffCodeActionProvider;
+  disposeCodeActionProvider: IDisposable;
+};
 
 export default function SourceEditor({
   visible,
   source,
   theme,
-  checks,
+  diagnostics,
   onChange,
+  onMount,
 }: {
   visible: boolean;
   source: string;
-  checks: Check[];
+  diagnostics: Diagnostic[];
   theme: Theme;
-  onChange: (pythonSource: string) => void;
+  onChange(pythonSource: string): void;
+  onMount(editor: IStandaloneCodeEditor): void;
 }) {
-  const monaco = useMonaco();
+  const monacoRef = useRef<MonacoEditorState | null>(null);
 
+  // Update the diagnostics in the editor.
   useEffect(() => {
-    const editor = monaco?.editor;
-    const model = editor?.getModels()[0];
-    if (!editor || !model) {
+    const editorState = monacoRef.current;
+
+    if (editorState == null) {
       return;
     }
 
-    editor.setModelMarkers(
-      model,
-      "owner",
-      checks.map((check) => ({
-        startLineNumber: check.location.row,
-        startColumn: check.location.column + 1,
-        endLineNumber: check.end_location.row,
-        endColumn: check.end_location.column + 1,
-        message: `${check.code}: ${check.message}`,
-        severity: MarkerSeverity.Error,
-        tags:
-          check.code === "F401" || check.code === "F841"
-            ? [MarkerTag.Unnecessary]
-            : [],
-      })),
-    );
+    editorState.codeActionProvider.diagnostics = diagnostics;
 
-    const codeActionProvider = monaco?.languages.registerCodeActionProvider(
-      "python",
-      {
-        // @ts-expect-error: The type definition is wrong.
-        provideCodeActions: function (model, position) {
-          const actions = checks
-            .filter((check) => position.startLineNumber === check.location.row)
-            .filter((check) => check.fix)
-            .map((check) => ({
-              title: `Fix ${check.code}`,
-              id: `fix-${check.code}`,
-              kind: "quickfix",
-              edit: check.fix
-                ? {
-                    edits: [
-                      {
-                        resource: model.uri,
-                        versionId: model.getVersionId(),
-                        edit: {
-                          range: {
-                            startLineNumber: check.fix.location.row,
-                            startColumn: check.fix.location.column + 1,
-                            endLineNumber: check.fix.end_location.row,
-                            endColumn: check.fix.end_location.column + 1,
-                          },
-                          text: check.fix.content,
-                        },
-                      },
-                    ],
-                  }
-                : undefined,
-            }));
-          return { actions, dispose: () => {} };
-        },
-      },
-    );
+    updateMarkers(editorState.monaco, diagnostics);
+  }, [diagnostics]);
+
+  // Dispose the code action provider on unmount.
+  useEffect(() => {
+    const disposeActionProvider = monacoRef.current?.disposeCodeActionProvider;
+    if (disposeActionProvider == null) {
+      return;
+    }
 
     return () => {
-      codeActionProvider?.dispose();
+      disposeActionProvider.dispose();
     };
-  }, [checks, monaco]);
+  }, []);
 
   const handleChange = useCallback(
     (value: string | undefined) => {
@@ -96,14 +72,40 @@ export default function SourceEditor({
     [onChange],
   );
 
+  const handleMount: OnMount = useCallback(
+    (editor, instance) => {
+      const ruffActionsProvider = new RuffCodeActionProvider(diagnostics);
+      const disposeCodeActionProvider =
+        instance.languages.registerCodeActionProvider(
+          "python",
+          ruffActionsProvider,
+        );
+
+      updateMarkers(instance, diagnostics);
+
+      monacoRef.current = {
+        monaco: instance,
+        codeActionProvider: ruffActionsProvider,
+        disposeCodeActionProvider,
+      };
+
+      onMount(editor);
+    },
+
+    [diagnostics, onMount],
+  );
+
   return (
-    <Editor
+    <MonacoEditor
+      onMount={handleMount}
       options={{
+        fixedOverflowWidgets: true,
         readOnly: false,
         minimap: { enabled: false },
         fontSize: 14,
         roundedSelection: false,
         scrollBeyondLastLine: false,
+        contextmenu: true,
       }}
       language={"python"}
       wrapperProps={visible ? {} : { style: { display: "none" } }}
@@ -111,5 +113,78 @@ export default function SourceEditor({
       value={source}
       onChange={handleChange}
     />
+  );
+}
+
+class RuffCodeActionProvider implements CodeActionProvider {
+  constructor(public diagnostics: Array<Diagnostic>) {}
+
+  provideCodeActions(
+    model: editor.ITextModel,
+    range: Range,
+  ): languages.ProviderResult<languages.CodeActionList> {
+    const actions = this.diagnostics
+      .filter((check) => range.startLineNumber === check.location.row)
+      .filter(({ fix }) => fix)
+      .map((check) => ({
+        title: check.fix
+          ? check.fix.message
+            ? `${check.code}: ${check.fix.message}`
+            : `Fix ${check.code}`
+          : "Fix",
+        id: `fix-${check.code}`,
+        kind: "quickfix",
+
+        edit: check.fix
+          ? {
+              edits: check.fix.edits.map((edit) => ({
+                resource: model.uri,
+                versionId: model.getVersionId(),
+                textEdit: {
+                  range: {
+                    startLineNumber: edit.location.row,
+                    startColumn: edit.location.column,
+                    endLineNumber: edit.end_location.row,
+                    endColumn: edit.end_location.column,
+                  },
+                  text: edit.content || "",
+                },
+              })),
+            }
+          : undefined,
+      }));
+
+    return {
+      actions,
+      dispose: () => {},
+    };
+  }
+}
+
+function updateMarkers(monaco: Monaco, diagnostics: Array<Diagnostic>) {
+  const editor = monaco.editor;
+  const model = editor?.getModels()[0];
+
+  if (!model) {
+    return;
+  }
+
+  editor.setModelMarkers(
+    model,
+    "owner",
+    diagnostics.map((diagnostic) => ({
+      startLineNumber: diagnostic.location.row,
+      startColumn: diagnostic.location.column,
+      endLineNumber: diagnostic.end_location.row,
+      endColumn: diagnostic.end_location.column,
+      message: diagnostic.code
+        ? `${diagnostic.code}: ${diagnostic.message}`
+        : diagnostic.message,
+      severity: MarkerSeverity.Error,
+      tags:
+        diagnostic.code === "F401" || diagnostic.code === "F841"
+          ? [MarkerTag.Unnecessary]
+          : [],
+    })),
   );
 }
