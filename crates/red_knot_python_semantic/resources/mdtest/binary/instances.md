@@ -259,11 +259,17 @@ class A:
 class B:
     __add__ = A()
 
-# TODO: this could be `int` if we declare `B.__add__` using a `Callable` type
-# TODO: Should not be an error: `A` instance is not a method descriptor, don't prepend `self` arg.
-#   Revealed type should be `Unknown | int`.
-# error: [unsupported-operator] "Operator `+` is unsupported between objects of type `B` and `B`"
-reveal_type(B() + B())  # revealed: Unknown
+reveal_type(B() + B())  # revealed: Unknown | int
+```
+
+Note that we union with `Unknown` here because `__add__` is not declared. We do infer just `int` if
+the callable is declared:
+
+```py
+class B2:
+    __add__: A = A()
+
+reveal_type(B2() + B2())  # revealed: int
 ```
 
 ## Integration test: numbers from typeshed
@@ -306,7 +312,7 @@ reveal_type(1 + A())  # revealed: A
 reveal_type(A() + "foo")  # revealed: A
 # TODO should be `A` since `str.__add__` doesn't support `A` instances
 # TODO overloads
-reveal_type("foo" + A())  # revealed: @Todo(return type)
+reveal_type("foo" + A())  # revealed: @Todo(return type of decorated function)
 
 reveal_type(A() + b"foo")  # revealed: A
 # TODO should be `A` since `bytes.__add__` doesn't support `A` instances
@@ -314,7 +320,7 @@ reveal_type(b"foo" + A())  # revealed: bytes
 
 reveal_type(A() + ())  # revealed: A
 # TODO this should be `A`, since `tuple.__add__` doesn't support `A` instances
-reveal_type(() + A())  # revealed: @Todo(return type)
+reveal_type(() + A())  # revealed: @Todo(return type of decorated function)
 
 literal_string_instance = "foo" * 1_000_000_000
 # the test is not testing what it's meant to be testing if this isn't a `LiteralString`:
@@ -323,7 +329,7 @@ reveal_type(literal_string_instance)  # revealed: LiteralString
 reveal_type(A() + literal_string_instance)  # revealed: A
 # TODO should be `A` since `str.__add__` doesn't support `A` instances
 # TODO overloads
-reveal_type(literal_string_instance + A())  # revealed: @Todo(return type)
+reveal_type(literal_string_instance + A())  # revealed: @Todo(return type of decorated function)
 ```
 
 ## Operations involving instances of classes inheriting from `Any`
@@ -349,6 +355,20 @@ class Y(Foo): ...
 
 # TODO: Should be `int | Unknown`; see above discussion.
 reveal_type(X() + Y())  # revealed: int
+```
+
+## Operations involving types with invalid `__bool__` methods
+
+<!-- snapshot-diagnostics -->
+
+```py
+class NotBoolable:
+    __bool__ = 3
+
+a = NotBoolable()
+
+# error: [unsupported-bool-conversion]
+10 and a and True
 ```
 
 ## Unsupported
