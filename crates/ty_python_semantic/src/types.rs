@@ -30,6 +30,7 @@ pub(crate) use self::infer::{
 };
 pub(crate) use self::signatures::{CallableSignature, Parameter, Parameters, Signature};
 pub(crate) use self::subclass_of::{SubclassOfInner, SubclassOfType};
+pub use crate::diagnostic::add_inferred_python_version_hint_to_diagnostic;
 use crate::module_name::ModuleName;
 use crate::module_resolver::{KnownModule, resolve_module};
 use crate::place::{
@@ -69,7 +70,6 @@ pub(crate) use crate::types::typed_dict::{TypedDictParams, TypedDictType, walk_t
 use crate::types::variance::{TypeVarVariance, VarianceInferable};
 use crate::types::visitor::any_over_type;
 use crate::unpack::EvaluationMode;
-pub use crate::util::diagnostics::add_inferred_python_version_hint_to_diagnostic;
 use crate::{Db, FxOrderSet, Module, Program};
 pub(crate) use class::{ClassLiteral, ClassType, GenericAlias, KnownClass};
 use instance::Protocol;
@@ -8303,7 +8303,11 @@ impl<'db> TypeVarInstance<'db> {
         ))
     }
 
-    #[salsa::tracked(cycle_fn=lazy_bound_cycle_recover, cycle_initial=lazy_bound_cycle_initial, heap_size=ruff_memory_usage::heap_size)]
+    #[salsa::tracked(
+        cycle_fn=lazy_bound_or_constraints_cycle_recover,
+        cycle_initial=lazy_bound_or_constraints_cycle_initial,
+        heap_size=ruff_memory_usage::heap_size
+    )]
     fn lazy_bound(self, db: &'db dyn Db) -> Option<TypeVarBoundOrConstraints<'db>> {
         let definition = self.definition(db)?;
         let module = parsed_module(db, definition.file(db)).load(db);
@@ -8324,7 +8328,11 @@ impl<'db> TypeVarInstance<'db> {
         Some(TypeVarBoundOrConstraints::UpperBound(ty))
     }
 
-    #[salsa::tracked(heap_size=ruff_memory_usage::heap_size)]
+    #[salsa::tracked(
+        cycle_fn=lazy_bound_or_constraints_cycle_recover,
+        cycle_initial=lazy_bound_or_constraints_cycle_initial,
+        heap_size=ruff_memory_usage::heap_size
+    )]
     fn lazy_constraints(self, db: &'db dyn Db) -> Option<TypeVarBoundOrConstraints<'db>> {
         let definition = self.definition(db)?;
         let module = parsed_module(db, definition.file(db)).load(db);
@@ -8385,7 +8393,7 @@ impl<'db> TypeVarInstance<'db> {
 }
 
 #[allow(clippy::ref_option)]
-fn lazy_bound_cycle_recover<'db>(
+fn lazy_bound_or_constraints_cycle_recover<'db>(
     _db: &'db dyn Db,
     _value: &Option<TypeVarBoundOrConstraints<'db>>,
     _count: u32,
@@ -8394,7 +8402,7 @@ fn lazy_bound_cycle_recover<'db>(
     salsa::CycleRecoveryAction::Iterate
 }
 
-fn lazy_bound_cycle_initial<'db>(
+fn lazy_bound_or_constraints_cycle_initial<'db>(
     _db: &'db dyn Db,
     _self: TypeVarInstance<'db>,
 ) -> Option<TypeVarBoundOrConstraints<'db>> {
